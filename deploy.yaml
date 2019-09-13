@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'AWS CloudFormation template for the Exploring The Eye of the Customer on Social Media using Amazon Rekognition and Amazon Athena blogpost'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+
+    ParameterGroups:
+      - Label:
+          default: Application Settings
+        Parameters:
+          - pApplicationName
+      - Label:
+          default: Database Settings
+        Parameters:
+          - pDatabaseName
+
+      - Label:
+          default: Twitter Settings
+        Parameters:
+          - pTwitterTermList
+          - pTwitterLanguages
+          - pTwitterAuthConsumerKey
+          - pTwitterAuthConsumerSecret
+          - pTwitterAuthToken
+          - pTwitterAuthTokenSecret
+      - Label:
+          default: VPC and Instance Settings
+        Parameters:
+          - pInstanceKeyName
+          - pVpcCIDR
+          - pPublicSubnet1CIDR
+      - Label:
+          default: Lambda Settings
+        Parameters:
+          - pLambdaS3Bucket
+          - pAnalyzeTweetsLambdaS3Key
+          - pAddTriggerLambdaS3Key
+
+    ParameterLabels:
+      pInstanceKeyName:
+        default: Instance Key
+      pTwitterTermList:
+        default: Twitter Term List
+      pTwitterLanguages:
+        default: Twitter Languages
+      pTwitterAuthConsumerKey:
+        default: Twitter Auth Consumer Key
+      pTwitterAuthConsumerSecret:
+        default: Twitter Auth Consumer Secret
+      pTwitterAuthToken:
+        default: Twitter Auth Token
+      pTwitterAuthTokenSecret:
+        default: Twitter Auth Token Secret
+      pApplicationName:
+        default: Application Name
+      pVpcCIDR:
+        default: VPC CIDR
+      pPublicSubnet1CIDR:
+        default: Public Subnet1 CIDR
+      pLambdaS3Bucket:
+        default: Lambda S3 Bucket
+      pAnalyzeTweetsLambdaS3Key:
+        default: S3 Key of Analyze Tweets Lambda ZIP file
+      pAddTriggerLambdaS3Key:
+        default: S3 Key of Add Trigger Lambda ZIP file
+      pDatabaseName:
+        default: Database Name
+
+
+Mappings:
+  #  This is just the Amazon Linux AMI:
+  AmazonLinuxAMI:
+    us-east-1: # Virginia
+      AMI: ami-a4c7edb2
+    us-east-2: # Ohio
+      AMI: ami-8a7859ef
+    us-west-1: # North California
+      AMI: ami-327f5352
+    us-west-2: # Oregon
+      AMI: ami-6df1e514
+    eu-west-1: # Ireland
+      AMI: ami-d7b9a2b1
+    eu-west-2: # London
+      AMI: ami-ed100689
+    eu-central-1: # Frankfurt
+      AMI: ami-82be18ed
+    sa-east-1: # Sao Paulo
+      AMI: ami-87dab1eb
+    ap-southeast-1: # Singapore
+      AMI: ami-77af2014
+    ap-southeast-2: # Sydney
+      AMI: ami-10918173
+    ap-northeast-1: # Tokyo
+      AMI: ami-3bd3c45c
+    ap-northeast-2: # Seoul
+      AMI: ami-e21cc38c
+    ca-central-1: # Canada
+      AMI: ami-a7aa15c3
+    ap-south-1: # Mumbai
+      AMI: ami-47205e28
+
+Parameters:
+
+  pInstanceKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "The name of the private key to use for SSH access."
+
+  pTwitterTermList:
+    Description: List of terms for twitter to listen to
+    Type: String
+    Default: "'cloud', 'computing'"
+
+  pTwitterLanguages:
+    Description: List of languages to use for the twitter streaming reader
+    Type: String
+    Default: "'en'"
+
+  pTwitterAuthConsumerKey:
+    Description: Consumer key for access twitter
+    Type: String
+
+  pTwitterAuthConsumerSecret:
+    Description: Consumer Secret for access twitter
+    Type: String
+
+  pTwitterAuthToken:
+    Description: Access Token Secret for calling twitter
+    Type: String
+
+  pTwitterAuthTokenSecret:
+    Description: Access Token Secret for calling twitter
+    Type: String
+
+  pApplicationName:
+    Description: Name of the application deploying for the EyeOfCustomer
+    Type: String
+    Default: EyeOfCustomer
+
+  pVpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.193.0.0/16
+
+  pPublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.193.10.0/24
+
+  pLambdaS3Bucket:
+    Description: Please enter the name of the S3 Bucket containing the Lambda function ZIP file
+    Type: String
+
+  pAnalyzeTweetsLambdaS3Key:
+    Description: Please enter the S3 Key of the Analyze Tweets Lambda function ZIP file
+    Type: String
+
+  pAddTriggerLambdaS3Key:
+    Description: Please enter the S3 Key of the Add S3 Trigger Lambda function ZIP file
+    Type: String
+
+  pDatabaseName:
+    Description: Name of the AWS Glue database containing tables for analyzing tweets
+    Type: String
+    Default: socialanalyticsblog
+
+
+Resources:
+
+  rTweetsEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for EC2 Twitter Reader
+      VpcId: !Ref rVPC
+      Tags:
+      - Key: Name
+        Value: rTweetsEC2SecurityGroup
+      - Key: ResourceGroup
+        Value: CloudFormationResource
+      - Key: Project
+        Value: !Join ['-', [!Ref 'pApplicationName', !Ref 'AWS::Region']]
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+
+  rEyeOfCustomerEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: '/'
+      Policies:
+        -
+          PolicyName: eyeofcustomer-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                    - 'firehose:DeleteDeliveryStream'
+                    - 'firehose:PutRecord'
+                    - 'firehose:PutRecordBatch'
+                    - 'firehose:UpdateDestination'
+                Resource: '*'
+  rVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+          - Key: Name
+            Value: !Ref pApplicationName
+
+  rInternetGateway:
+      Type: AWS::EC2::InternetGateway
+      Properties:
+          Tags:
+              - Key: Name
+                Value: !Ref pApplicationName
+
+  rInternetGatewayAttachment:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Properties:
+          InternetGatewayId: !Ref rInternetGateway
+          VpcId: !Ref rVPC
+
+  rPublicSubnet1:
+      Type: AWS::EC2::Subnet
+      Properties:
+          VpcId: !Ref rVPC
+          AvailabilityZone: !Select [ 0, !GetAZs ]
+          CidrBlock: !Ref pPublicSubnet1CIDR
+          MapPublicIpOnLaunch: true
+          Tags:
+              - Key: Name
+                Value: !Sub ${pApplicationName} Public Subnet (AZ1)
+
+  rPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+        VpcId: !Ref rVPC
+        Tags:
+            - Key: Name
+              Value: !Sub ${pApplicationName} Public Routes
+
+  rDefaultPublicRoute:
+      Type: AWS::EC2::Route
+      DependsOn: rInternetGatewayAttachment
+      Properties:
+          RouteTableId: !Ref rPublicRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          GatewayId: !Ref rInternetGateway
+
+  rPublicSubnet1RouteTableAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+          RouteTableId: !Ref rPublicRouteTable
+          SubnetId: !Ref rPublicSubnet1
+
+  rTweetsBucket:
+    Type: AWS::S3::Bucket
+
+  rTwitterStreamingInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: '/'
+      Roles:
+        - !Ref rEyeOfCustomerEC2Role
+
+  rTwitterStreamingReaderServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [ AmazonLinuxAMI, !Ref 'AWS::Region', AMI]  # Lookup the AMI in the region map
+      InstanceType: t2.medium                                         # Any size is fine
+      KeyName: !Ref pInstanceKeyName                                   # Use the keypair from the input parameters
+      SecurityGroupIds:
+      - !Ref rTweetsEC2SecurityGroup
+      IamInstanceProfile: !Ref rTwitterStreamingInstanceProfile
+      SubnetId: !Ref rPublicSubnet1
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [!Ref 'pApplicationName', 'DeployGroup', !Ref 'AWS::Region']]
+      - Key: Project
+        Value: !Join ['-', [!Ref 'pApplicationName', !Ref 'AWS::Region']]
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+          - |
+            #!/bin/bash -ex
+            set -e
+
+            sleep 60
+
+            yum clean all
+
+            yum -y install nodejs npm --enablerepo=epel
+
+            npm config set registry http://registry.npmjs.org/
+
+            npm install node-sass request@2.81.0
+
+            echo "var twitter_config = module.exports = {
+            twitter: {
+                consumer_key: '${TwitterConsumerKey}',
+                consumer_secret: '${TwitterConsumerSecret}',
+                access_token: '${TwitterAccessToken}',
+                access_token_secret: '${TwitterTokenSecret}'
+              },
+            topics: [${TwitterTerms}],
+            languages: [${pTwitterLanguages}],
+            kinesis_delivery: '${KinesisIngestionFirehose}'
+            }" > /home/ec2-user/twitter_reader_config.js
+
+            wget https://s3.amazonaws.com/serverless-analytics/SocialMediaAnalytics-blog/SocialAnalyticsReader.tar
+
+            tar --warning=no-unknown-keyword -xf SocialAnalyticsReader.tar -C /home/ec2-user/
+
+            echo "Service started."
+          - {
+              TwitterTerms: !Ref pTwitterTermList,
+              pTwitterLanguages: !Ref pTwitterLanguages ,
+              TwitterConsumerKey: !Ref pTwitterAuthConsumerKey,
+              TwitterConsumerSecret: !Ref pTwitterAuthConsumerSecret,
+              TwitterAccessToken: !Ref pTwitterAuthToken,
+              TwitterTokenSecret: !Ref pTwitterAuthTokenSecret,
+              KinesisIngestionFirehose: !Ref rIngestionFirehoseStream
+            }
+
+  rIngestionFirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket]]
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        Prefix: 'raw/'
+        CompressionFormat: 'UNCOMPRESSED'
+        RoleARN: !GetAtt rIngestionFireHoseRole.Arn
+
+  rEntitiesFirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket]]
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        Prefix: 'entities/'
+        CompressionFormat: 'UNCOMPRESSED'
+        RoleARN: !GetAtt rIngestionFireHoseRole.Arn
+
+  rSentimentFirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket]]
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        Prefix: 'sentiment/'
+        CompressionFormat: 'UNCOMPRESSED'
+        RoleARN: !GetAtt rIngestionFireHoseRole.Arn
+
+  rRekognitionFirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket]]
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        Prefix: 'media/'
+        CompressionFormat: 'UNCOMPRESSED'
+        RoleARN: !GetAtt rIngestionFireHoseRole.Arn
+
+  rIngestionFireHoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  rIngestionFirehosePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: TweetIngestionFirehosePolicy
+      Roles:
+        - !Ref rIngestionFireHoseRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket]]
+              - !Join ['', ['arn:aws:s3:::', !Ref rTweetsBucket, '/*']]
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource:
+              - arn:aws:logs:*:*:*
+
+  rEyeOfCustomerLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [lambda.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: EyeOfCustomerLambdaFunctionExecutionPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: CloudWatchAccess
+            Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
+            Resource: arn:aws:logs:*:*:*
+          - Sid: S3Access
+            Effect: Allow
+            Action: ['*']
+            Resource: [!GetAtt [rTweetsBucket, Arn],
+                      !Join ['', [!GetAtt [rTweetsBucket, Arn], /*]]]
+          - Sid: FirehoseAccess
+            Effect: Allow
+            Action: ['firehose:ListDeliveryStreams', 'firehose:PutRecord', 'firehose:PutRecordBatch']
+            Resource: [!GetAtt [rSentimentFirehoseStream, Arn],
+                       !GetAtt [rEntitiesFirehoseStream, Arn],
+                       !GetAtt [rRekognitionFirehoseStream, Arn]]
+          - Sid: ComprehendAccess
+            Effect: Allow
+            Action: ['comprehend:DetectEntities', 'comprehend:DetectSentiment']
+            Resource: '*'
+          - Sid: RekognitionAccess
+            Effect: Allow
+            Action: ['rekognition:DetectLabels','rekognition:DetectFaces','rekognition:RecognizeCelebrities','rekognition:DetectModerationLabels','rekognition:DetectText']
+            Resource: '*'
+
+  rEyeOfCustomerLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref pLambdaS3Bucket
+        S3Key: !Ref pAnalyzeTweetsLambdaS3Key
+      Handler: index.handler
+      Runtime: python3.7
+      MemorySize: 256
+      Timeout: 900
+      Role:
+        Fn::GetAtt:
+        - rEyeOfCustomerLambdaFunctionRole
+        - Arn
+      Environment:
+        Variables:
+          SENTIMENT_STREAM: !Ref rSentimentFirehoseStream
+          ENTITY_STREAM: !Ref rEntitiesFirehoseStream
+          REKOGNITION_STREAM: !Ref rRekognitionFirehoseStream
+          BUCKET: !Ref rTweetsBucket
+          IMAGEKEY_PREFIX: tmp/images/
+
+  rSocialMediaGlueDB:
+    Type: "AWS::Glue::Database"
+    Properties:
+      DatabaseInput:
+        Name: !Ref pDatabaseName
+      CatalogId: !Ref AWS::AccountId
+
+  rTweetsTable:
+    Type: "AWS::Glue::Table"
+    Properties:
+      TableInput:
+        Name: tweets
+        StorageDescriptor:
+          Compressed: False
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Join ['', ['s3://', !Ref 'rTweetsBucket', '/raw/']]
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+          - Name: id
+            Type: bigint
+          - Name: coordinates
+            Type: struct<type:string,coordinates:array<double>>
+          - Name: retweeted
+            Type: boolean
+          - Name: source
+            Type: string
+          - Name: entities
+            Type: struct<hashtags:array<struct<text:string,indices:array<bigint>>>,urls:array<struct<url:string,expanded_url:string,display_url:string,indices:array<bigint>>>>
+          - Name: extended_entities
+            Type: struct<media:array<struct<id:string,indices:array<bigint>,media_url:string,media_url_https:string,url:string,display_url:string,expanded_url:string,type:string,sizes:struct<thumb:struct<w:int,h:int,resize:string>,large:struct<w:int,h:int,resize:string>,medium:struct<w:int,h:int,resize:string>,small:struct<w:int,h:int,resize:string>>>>,favorited:boolean,retweeted:boolean,possibly_sensitive:boolean,filter_level:string,lang:string>
+          - Name: reply_count
+            Type: bigint
+          - Name: favorite_count
+            Type: bigint
+          - Name: geo
+            Type: struct<type:string,coordinates:array<double>>
+          - Name: id_str
+            Type: string
+          - Name: timestamp_ms
+            Type: bigint
+          - Name: truncated
+            Type: boolean
+          - Name: text
+            Type: string
+          - Name: retweet_count
+            Type: bigint
+          - Name: possibly_sensitive
+            Type: boolean
+          - Name: filter_level
+            Type: string
+          - Name: created_at
+            Type: string
+          - Name: place
+            Type: struct<id:string,url:string,place_type:string,name:string,full_name:string,country_code:string,country:string,bounding_box:struct<type:string,coordinates:array<array<array<float>>>>>
+          - Name: favorited
+            Type: boolean
+          - Name: lang
+            Type: string
+          - Name: in_reply_to_screen_name
+            Type: string
+          - Name: is_quote_status
+            Type: boolean
+          - Name: in_reply_to_user_id_str
+            Type: string
+          - Name: user
+            Type: struct<id:bigint,id_str:string,name:string,screen_name:string,location:string,url:string,description:string,translator_type:string,protected:boolean,verified:boolean,followers_count:bigint,friends_count:bigint,listed_count:bigint,favourites_count:bigint,statuses_count:bigint,created_at:string,utc_offset:bigint,time_zone:string,geo_enabled:boolean,lang:string,contributors_enabled:boolean,is_translator:boolean,profile_background_color:string,profile_background_image_url:string,profile_background_image_url_https:string,profile_background_tile:boolean,profile_link_color:string,profile_sidebar_border_color:string,profile_sidebar_fill_color:string,profile_text_color:string,profile_use_background_image:boolean,profile_image_url:string,profile_image_url_https:string,profile_banner_url:string,default_profile:boolean,default_profile_image:boolean>
+          - Name: quote_count
+            Type: bigint
+        Parameters: {'classification': 'json'}
+      DatabaseName: !Ref rSocialMediaGlueDB
+      CatalogId: !Ref AWS::AccountId
+
+  rTweetSentimentTable:
+    Type: "AWS::Glue::Table"
+    Properties:
+      TableInput:
+        Name: tweet_sentiments
+        StorageDescriptor:
+          Compressed: False
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Join ['', ['s3://', !Ref 'rTweetsBucket', '/sentiment/']]
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+          - Name: tweetid
+            Type: bigint
+          - Name: text
+            Type: string
+          - Name: originaltext
+            Type: string
+          - Name: sentiment
+            Type: string
+          - Name: sentimentposscore
+            Type: double
+          - Name: sentimentnegscore
+            Type: double
+          - Name: sentimentneuscore
+            Type: double
+          - Name: sentimentmixedscore
+            Type: double
+        Parameters: {'classification': 'json'}
+      DatabaseName: !Ref rSocialMediaGlueDB
+      CatalogId: !Ref AWS::AccountId
+
+  rTweetEntitiesTable:
+    Type: "AWS::Glue::Table"
+    Properties:
+      TableInput:
+        Name: tweet_entities
+        StorageDescriptor:
+          Compressed: False
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Join ['', ['s3://', !Ref 'rTweetsBucket', '/entities/']]
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+          - Name: tweetid
+            Type: bigint
+          - Name: entity
+            Type: string
+          - Name: type
+            Type: string
+          - Name: score
+            Type: double
+        Parameters: {'classification': 'json'}
+      DatabaseName: !Ref rSocialMediaGlueDB
+      CatalogId: !Ref AWS::AccountId
+
+  rTweetMediaRekognitionTable:
+    Type: "AWS::Glue::Table"
+    Properties:
+      TableInput:
+        Name: media_rekognition
+        StorageDescriptor:
+          Compressed: False
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Join ['', ['s3://', !Ref 'rTweetsBucket', '/media/']]
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+          - Name: tweetid
+            Type: bigint
+          - Name: mediaid
+            Type: string
+          - Name: text
+            Type: string
+          - Name: media_url
+            Type: string
+          - Name: image_labels
+            Type: struct<labels:array<struct<instances:array<struct<boundingbox:struct<width:double,top:double,left:double,height:double>,confidence:double>>,confidence:double,parents:array<struct<name:string>>,name:string>>,textdetections:array<struct<geometry:struct<boundingbox:struct<width:double,top:double,left:double,height:double>,polygon:array<struct<x:double,y:double>>>,confidence:double,detectedtext:string,type:string,id:int,parentid:int>>,facedetails:array<struct<confidence:double,eyeglasses:struct<confidence:double,value:boolean>,sunglasses:struct<confidence:double,value:boolean>,gender:struct<confidence:double,value:string>,landmarks:array<struct<x:double,y:double,type:string>>,pose:struct<yaw:double,roll:double,pitch:double>,emotions:array<struct<confidence:double,type:string>>,agerange:struct<high:int,low:int>,eyesopen:struct<confidence:double,value:boolean>,boundingbox:struct<width:double,top:double,left:double,height:double>,smile:struct<confidence:double,value:boolean>,mouthopen:struct<confidence:double,value:boolean>,quality:struct<sharpness:double,brightness:double>,mustache:struct<confidence:double,value:boolean>,beard:struct<confidence:double,value:boolean>>>,celebrityrecognition:struct<unrecognizedfaces:array<struct<boundingbox:struct<width:double,top:double,left:double,height:double>,confidence:double,landmarks:array<struct<x:double,y:double,type:string>>,pose:struct<yaw:double,roll:double,pitch:double>,quality:struct<sharpness:double,brightness:double>>>,celebrityfaces:array<struct<face:struct<boundingbox:struct<width:double,top:double,left:double,height:double>,confidence:double,landmarks:array<struct<x:double,y:double,type:string>>,pose:struct<yaw:double,roll:double,pitch:double>,quality:struct<sharpness:double,brightness:double>>,urls:array<string>,name:string,id:string,matchconfidence:double>>,orientationcorrection:string>,moderationlabels:array<struct<confidence:double,name:string,parentname:string>>,labelmodelversion:string>
+        Parameters: {'classification': 'json'}
+      DatabaseName: !Ref rSocialMediaGlueDB
+      CatalogId: !Ref AWS::AccountId
+
+  rS3Notification:
+    Type: Custom::Notification
+    Properties:
+      ServiceToken: !GetAtt rLambdaS3EventCreationCustomResource.Arn
+
+  rAttachPolicyCustomResourceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [lambda.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: SocialMediaAnalyticLambdaFunctionExecutionPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: CloudWatchAccess
+            Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
+            Resource: arn:aws:logs:*:*:*
+          - Sid: S3Access
+            Effect: Allow
+            Action: ['s3:GetObject', 's3:PutObject', 's3:PutBucketNotification', 's3:ListBucket', 's3:DeleteObject']
+            Resource:
+              - !Join ['', ['arn:aws:s3:::', !Ref 'rTweetsBucket']]
+              - !Join ['', ['arn:aws:s3:::', !Ref 'rTweetsBucket', '/*']]
+          - Sid: LambdaAddPermission
+            Effect: Allow
+            Action: ['lambda:AddPermission']
+            Resource: !GetAtt rEyeOfCustomerLambda.Arn
+
+  rLambdaS3EventCreationCustomResource:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt rAttachPolicyCustomResourceLambdaRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+      Environment :
+        Variables:
+          lambda_arn: !GetAtt rEyeOfCustomerLambda.Arn
+          account_number: !Ref 'AWS::AccountId'
+          s3_bucket: !Ref 'rTweetsBucket'
+      Code:
+        S3Bucket: !Ref pLambdaS3Bucket
+        S3Key: !Ref pAddTriggerLambdaS3Key
+
+Outputs:
+  SSHCommand:
+    Description: To establish an SSH tunnel with the twitter stream reader, type the following command.
+    Value: !Join ['', [ssh -i ~/, !Ref 'pInstanceKeyName', .pem ec2-user@, !GetAtt [
+          rTwitterStreamingReaderServer, PublicDnsName]]]
+
+  EC2InstanceConsoleURL:
+    Description: URL to ec2 EC2InstanceConsoleURL
+    Value: !Join ['', ['https://', !Ref "AWS::Region", '.console.aws.amazon.com/ec2/home?region=', !Ref "AWS::Region", '#Instances:search=', !Ref 'rTwitterStreamingReaderServer']]
+
+  LambdaFunctionConsoleURL:
+    Description: URL to the Lambda Function console
+    Value: !Join ['', ['https://console.aws.amazon.com/lambda/home?region=', !Ref "AWS::Region", '#/functions/', !Ref "rEyeOfCustomerLambda", '?tab=graph']]
+
+  S3ConsoleURL:
+    Description: URL to the Lambda Function console
+    Value: !Join ['', ['https://s3.console.aws.amazon.com/s3/buckets/', !Ref 'rTweetsBucket', '/?region=', !Ref "AWS::Region", '&tab=overview']]
+
+  TwitterRawLocation:
+    Description: S3 Twitter Raw location.
+    Value: !Join ['', ['s3://', !Ref 'rTweetsBucket', /raw/]]
+
+  TwitterEntitiesLocation:
+    Description: S3 Twitter Entities location.
+    Value: !Join ['', ['s3://', !Ref 'rTweetsBucket', /entities/]]
+
+  TwitterSentimentLocation:
+    Description: S3 Twitter Sentiment location.
+    Value: !Join ['', ['s3://', !Ref 'rTweetsBucket', /sentiment/]]
+
+  TwitterMediaLabelsLocation:
+    Description: S3 Twitter Media Labels location.
+    Value: !Join ['', ['s3://', !Ref 'rTweetsBucket', /media/]]
+
