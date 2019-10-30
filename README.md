@@ -1,4 +1,4 @@
-Exploring The Eye of the Customer on Social Media using Amazon Rekognition and Amazon Athena
+ Exploring Images on Social Media using Amazon Rekognition
 ================
 
 ## Solution Overview
@@ -11,9 +11,9 @@ Follow the instructions in this [AWS Blog post](https: < TO DO - UPDATE >) to se
 
 To deploy manually (i.e., without using the blog "Launch template" bucket):
 * Clone this repo
-* Copy the files into an S3 bucket, into a directory with the name "eyeofthecustomer"
+* Copy the files into an S3 bucket, into a directory with the name "socialmediaimageanalysis"
 * Follow the instructions in the blog.
-* Instead of using the blog's "Launch" button: From the AWS CloudFormation console, execute the template s3://<your_bucket>/eyeofthecustomer/deploy.yaml
+* Instead of using the blog's "Launch" button: From the AWS CloudFormation console, execute the template s3://<your_bucket>/socialmediaimageanalysis/deploy.yaml
   directory.
 * Change the S3 Bucket the of the Lambda ZIP file to your S3 Bucket.
 * Follow the remainder of the instructions in the blog.
