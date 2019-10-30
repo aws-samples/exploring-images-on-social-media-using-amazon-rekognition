@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: 'AWS::Serverless-2016-10-31'
-Description: 'AWS CloudFormation template for the Exploring The Eye of the Customer on Social Media using Amazon Rekognition and Amazon Athena blogpost'
+Description: 'AWS CloudFormation template for the Exploring Images on Social Media using Amazon Rekognition'
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -30,6 +30,7 @@ Metadata:
           - pInstanceKeyName
           - pVpcCIDR
           - pPublicSubnet1CIDR
+          - pPublicSubnet1IngressCIDR
       - Label:
           default: Lambda Settings
         Parameters:
@@ -58,6 +59,8 @@ Metadata:
         default: VPC CIDR
       pPublicSubnet1CIDR:
         default: Public Subnet1 CIDR
+      pPublicSubnet1IngressCIDR:
+        default: Management IP Address
       pLambdaS3Bucket:
         default: Lambda S3 Bucket
       pAnalyzeTweetsLambdaS3Key:
@@ -125,7 +128,7 @@ Parameters:
     Type: String
 
   pTwitterAuthToken:
-    Description: Access Token Secret for calling twitter
+    Description: Access Token for calling twitter
     Type: String
 
   pTwitterAuthTokenSecret:
@@ -133,9 +136,9 @@ Parameters:
     Type: String
 
   pApplicationName:
-    Description: Name of the application deploying for the EyeOfCustomer
+    Description: Name of the application deploying for the Exploring Images on Social Media using Amazon Rekognition blogpost
     Type: String
-    Default: EyeOfCustomer
+    Default: SocialMediaImageAnalytics
 
   pVpcCIDR:
     Description: Please enter the IP range (CIDR notation) for this VPC
@@ -150,22 +153,59 @@ Parameters:
   pLambdaS3Bucket:
     Description: Please enter the name of the S3 Bucket containing the Lambda function ZIP file
     Type: String
+    Default: cg-test-us-east-1 # TODO change for BP
 
   pAnalyzeTweetsLambdaS3Key:
     Description: Please enter the S3 Key of the Analyze Tweets Lambda function ZIP file
     Type: String
+    Default: analyze_tweets_function.zip # TODO change for BP
 
   pAddTriggerLambdaS3Key:
-    Description: Please enter the S3 Key of the Add S3 Trigger Lambda function ZIP file
+    Description: Please enter the S3 Key of the Add Trigger Lambda function ZIP file
     Type: String
+    Default: addtrigger_function.zip # TODO change for BP
 
   pDatabaseName:
     Description: Name of the AWS Glue database containing tables for analyzing tweets
     Type: String
     Default: socialanalyticsblog
 
+  pPublicSubnet1IngressCIDR:
+    Description: Please enter your computer's IP address (CIDR notation) for SSH access to public subnet
+    Type: String
+    Default: x.x.x.x/32
+
+
 
 Resources:
+
+  rAuthConsumerSecretManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: AuthConsumerSecretManagerSecret
+      SecretString:
+        !Ref pTwitterAuthConsumerSecret
+
+  rAuthAccessTokenSecretManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: AuthAccessTokenSecretManagerSecret
+      SecretString:
+        !Ref pTwitterAuthTokenSecret
+
+  rAuthConsumerManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: AuthConsumerManagerSecret
+      SecretString:
+        !Ref  pTwitterAuthConsumerKey
+
+  rAuthAccessTokenManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: AuthAccessTokenManagerSecret
+      SecretString:
+        !Ref pTwitterAuthToken
 
   rTweetsEC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -183,9 +223,9 @@ Resources:
       - IpProtocol: tcp
         FromPort: '22'
         ToPort: '22'
-        CidrIp: 0.0.0.0/0
+        CidrIp: !Ref pPublicSubnet1IngressCIDR
 
-  rEyeOfCustomerEC2Role:
+  rSocialMediaImageAnalyticsEC2Role:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -199,18 +239,33 @@ Resources:
       Path: '/'
       Policies:
         -
-          PolicyName: eyeofcustomer-policy
+          PolicyName: socialmedia-image-analytics-policy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               -
                 Effect: Allow
                 Action:
-                    - 'firehose:DeleteDeliveryStream'
+                    # - 'firehose:DeleteDeliveryStream'
                     - 'firehose:PutRecord'
                     - 'firehose:PutRecordBatch'
                     - 'firehose:UpdateDestination'
-                Resource: '*'
+                Resource:
+                  # - !Join ['', ['arn:aws:firehose:::deliverystream/', !Ref rIngestionFirehoseStream ]]
+                  - !GetAtt rIngestionFirehoseStream.Arn
+                  - !GetAtt rEntitiesFirehoseStream.Arn
+                  - !GetAtt rSentimentFirehoseStream.Arn
+                  - !GetAtt rRekognitionFirehoseStream.Arn
+              -
+                Effect: Allow
+                Action:
+                    - 'secretsmanager:GetSecretValue'
+                Resource:
+                  - !Ref rAuthConsumerSecretManagerSecret
+                  - !Ref rAuthAccessTokenSecretManagerSecret
+                  - !Ref rAuthConsumerManagerSecret
+                  - !Ref rAuthAccessTokenManagerSecret
+
   rVPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -275,7 +330,7 @@ Resources:
     Properties:
       Path: '/'
       Roles:
-        - !Ref rEyeOfCustomerEC2Role
+        - !Ref rSocialMediaImageAnalyticsEC2Role
 
   rTwitterStreamingReaderServer:
     Type: AWS::EC2::Instance
@@ -303,6 +358,8 @@ Resources:
 
             yum clean all
 
+            yum update -y
+
             yum -y install nodejs npm --enablerepo=epel
 
             npm config set registry http://registry.npmjs.org/
@@ -311,10 +368,10 @@ Resources:
 
             echo "var twitter_config = module.exports = {
             twitter: {
-                consumer_key: '${TwitterConsumerKey}',
-                consumer_secret: '${TwitterConsumerSecret}',
-                access_token: '${TwitterAccessToken}',
-                access_token_secret: '${TwitterTokenSecret}'
+                consumer_key: '`aws secretsmanager get-secret-value --secret-id AuthConsumerManagerSecret --query SecretString --output text --region ${Region}`',
+                consumer_secret: '`aws secretsmanager get-secret-value --secret-id AuthConsumerSecretManagerSecret --query SecretString --output text --region ${Region}`',
+                access_token: '`aws secretsmanager get-secret-value --secret-id AuthAccessTokenManagerSecret --query SecretString --output text --region ${Region}`',
+                access_token_secret: '`aws secretsmanager get-secret-value --secret-id AuthAccessTokenSecretManagerSecret --query SecretString --output text --region ${Region}`'
               },
             topics: [${TwitterTerms}],
             languages: [${pTwitterLanguages}],
@@ -328,11 +385,8 @@ Resources:
             echo "Service started."
           - {
               TwitterTerms: !Ref pTwitterTermList,
-              pTwitterLanguages: !Ref pTwitterLanguages ,
-              TwitterConsumerKey: !Ref pTwitterAuthConsumerKey,
-              TwitterConsumerSecret: !Ref pTwitterAuthConsumerSecret,
-              TwitterAccessToken: !Ref pTwitterAuthToken,
-              TwitterTokenSecret: !Ref pTwitterAuthTokenSecret,
+              pTwitterLanguages: !Ref pTwitterLanguages,
+              Region: !Ref 'AWS::Region',
               KinesisIngestionFirehose: !Ref rIngestionFirehoseStream
             }
 
@@ -428,7 +482,7 @@ Resources:
             Resource:
               - arn:aws:logs:*:*:*
 
-  rEyeOfCustomerLambdaFunctionRole:
+  rSocialMediaImageAnalyticsLambdaFunctionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -440,7 +494,7 @@ Resources:
           Action: ['sts:AssumeRole']
       Path: /
       Policies:
-      - PolicyName: EyeOfCustomerLambdaFunctionExecutionPolicy
+      - PolicyName: SocialMediaImageAnalyticsLambdaFunctionExecutionPolicy
         PolicyDocument:
           Version: '2012-10-17'
           Statement:
@@ -450,7 +504,7 @@ Resources:
             Resource: arn:aws:logs:*:*:*
           - Sid: S3Access
             Effect: Allow
-            Action: ['*']
+            Action: ['s3:GetObject', 's3:ListBucket', 's3:PutObject']
             Resource: [!GetAtt [rTweetsBucket, Arn],
                       !Join ['', [!GetAtt [rTweetsBucket, Arn], /*]]]
           - Sid: FirehoseAccess
@@ -468,7 +522,7 @@ Resources:
             Action: ['rekognition:DetectLabels','rekognition:DetectFaces','rekognition:RecognizeCelebrities','rekognition:DetectModerationLabels','rekognition:DetectText']
             Resource: '*'
 
-  rEyeOfCustomerLambda:
+  rSocialMediaImageAnalyticsLambda:
     Type: 'AWS::Lambda::Function'
     Properties:
       Code:
@@ -480,7 +534,7 @@ Resources:
       Timeout: 900
       Role:
         Fn::GetAtt:
-        - rEyeOfCustomerLambdaFunctionRole
+        - rSocialMediaImageAnalyticsLambdaFunctionRole
         - Arn
       Environment:
         Variables:
@@ -687,7 +741,7 @@ Resources:
           - Sid: LambdaAddPermission
             Effect: Allow
             Action: ['lambda:AddPermission']
-            Resource: !GetAtt rEyeOfCustomerLambda.Arn
+            Resource: !GetAtt rSocialMediaImageAnalyticsLambda.Arn
 
   rLambdaS3EventCreationCustomResource:
     Type: AWS::Lambda::Function
@@ -698,7 +752,7 @@ Resources:
       Timeout: 300
       Environment :
         Variables:
-          lambda_arn: !GetAtt rEyeOfCustomerLambda.Arn
+          lambda_arn: !GetAtt rSocialMediaImageAnalyticsLambda.Arn
           account_number: !Ref 'AWS::AccountId'
           s3_bucket: !Ref 'rTweetsBucket'
       Code:
@@ -717,7 +771,7 @@ Outputs:
 
   LambdaFunctionConsoleURL:
     Description: URL to the Lambda Function console
-    Value: !Join ['', ['https://console.aws.amazon.com/lambda/home?region=', !Ref "AWS::Region", '#/functions/', !Ref "rEyeOfCustomerLambda", '?tab=graph']]
+    Value: !Join ['', ['https://console.aws.amazon.com/lambda/home?region=', !Ref "AWS::Region", '#/functions/', !Ref "rSocialMediaImageAnalyticsLambda", '?tab=graph']]
 
   S3ConsoleURL:
     Description: URL to the Lambda Function console
@@ -738,4 +792,3 @@ Outputs:
   TwitterMediaLabelsLocation:
     Description: S3 Twitter Media Labels location.
     Value: !Join ['', ['s3://', !Ref 'rTweetsBucket', /media/]]
-
