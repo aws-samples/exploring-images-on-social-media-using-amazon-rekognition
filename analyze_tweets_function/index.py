@@ -34,12 +34,13 @@ s3client = boto3.client('s3')
 comprehend = boto3.client('comprehend')
 firehose = boto3.client('firehose')
 rekognition = boto3.client('rekognition')
-
+sqs = boto3.client('sqs')
 # Global Vars
 sentiment_stream = os.environ.get('SENTIMENT_STREAM', '')
 entity_stream = os.environ.get('ENTITY_STREAM', '')
 rekognition_stream = os.environ.get('REKOGNITION_STREAM', '')
 s3_bucket = os.environ.get('BUCKET', '')
+dlq = os.environ.get('DEADLETTER_QUEUE', '')
 imagekey_prefix = os.environ.get('IMAGEKEY_PREFIX', 'tmp/')
 min_label_confidence = float(os.environ.get('MIN_LABEL_CONFIDENCE', 50.0))
 max_labels = int(os.environ.get('MAX_LABELS', 100))
@@ -62,42 +63,48 @@ def label_image(s3_bucket, image_s3_key, max_labels=max_labels, min_label_confid
         }
     }
 
+    rekognition_results = {}
     try:
         labels = rekognition.detect_labels(Image=image,
                                            MaxLabels=max_labels,
                                            MinConfidence=min_label_confidence)
+        rekognition_results['Labels'] =  labels.get('Labels', [])
 
         # Determine the need to run Detect Text, Recognize Celebrities, or Detect Faces APIs based on labels detected in image
         labelNames = {label['Name'] for label in labels['Labels']}
         if 'Text' in labelNames:
             text = rekognition.detect_text(Image=image)
-        else:
-            text = {}
+            rekognition_results['TextDetections'] =  text.get('TextDetections', [])
+
         if 'Person' in labelNames:
             celebrities = rekognition.recognize_celebrities(Image=image)
-            faces = rekognition.detect_faces(Image=image, Attributes=['ALL'])
-        else:
-            celebrities = {}
-            faces = {}
-        # Every image is run through moderation label detection
-        moderation = rekognition.detect_moderation_labels(Image=image)
-        # Bundle all labels together
-        item = {
-            'Labels': labels.get('Labels', []),
-            'TextDetections': text.get('TextDetections', []),
-            'CelebrityRecognition': {
+            rekognition_results['CelebrityRekognition'] = {
                 'UnrecognizedFaces': celebrities.get('UnrecognizedFaces', []),
                 'CelebrityFaces': celebrities.get('CelebrityFaces', []),
                 'OrientationCorrection': celebrities.get('OrientationCorrection', [])
-            },
-            'FaceDetails': faces.get('FaceDetails', []),
-            'ModerationLabels': moderation.get('ModerationLabels',[])
-        }
+            }
+
+            faces = rekognition.detect_faces(Image=image, Attributes=['ALL'])
+            rekognition_results['FaceDetails'] = faces.get('FaceDetails', [])
+
+        # Every image is run through moderation label detection
+        moderation = rekognition.detect_moderation_labels(Image=image)
+        rekognition_results['ModerationLabels'] = moderation.get('ModerationLabels', [])
         print ('Processed: s3://{bucket}/{key}'.format(bucket=s3_bucket, key=image_s3_key))
-        return (item, 's3://{bucket}/{key}'.format(bucket=s3_bucket, key=image_s3_key))
     except Exception as e:
-        print('Failed to analyze image: {image} {error}'.format(image=json.dumps(image), error=str(e)))
-        return (None, None)
+        # Send the error and image to a Dead-Letter Queue
+        print('Failed to fully analyze image: {image} {error}'.format(image=json.dumps(image), error=str(e)))
+
+        sqs.send_message(QueueUrl=dlq,
+                         MessageBody=json.dumps({'Image': image,
+                                             'Error': str(e),
+                                             'RekognitionResults': rekognition_results })
+                         )
+        if rekognition_results == {}:
+            return (None, None)
+
+    # Return results, even if partial
+    return (rekognition_results, 's3://{bucket}/{key}'.format(bucket=s3_bucket, key=image_s3_key))
 
 
 def store_tweet_image_in_s3(image_url, s3_bucket=s3_bucket):

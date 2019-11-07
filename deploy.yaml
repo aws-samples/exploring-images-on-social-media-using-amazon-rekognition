@@ -521,6 +521,10 @@ Resources:
             Effect: Allow
             Action: ['rekognition:DetectLabels','rekognition:DetectFaces','rekognition:RecognizeCelebrities','rekognition:DetectModerationLabels','rekognition:DetectText']
             Resource: '*'
+          - Sid: SQSAccess
+            Effect: Allow
+            Action: ['sqs:SendMessage']
+            Resource: [!GetAtt [rDeadLetterQueue, Arn]]
 
   rSocialMediaImageAnalyticsLambda:
     Type: 'AWS::Lambda::Function'
@@ -532,6 +536,7 @@ Resources:
       Runtime: python3.7
       MemorySize: 256
       Timeout: 900
+      ReservedConcurrentExecutions: 100 # Aligns with Rekognition TPS limit
       Role:
         Fn::GetAtt:
         - rSocialMediaImageAnalyticsLambdaFunctionRole
@@ -542,6 +547,7 @@ Resources:
           ENTITY_STREAM: !Ref rEntitiesFirehoseStream
           REKOGNITION_STREAM: !Ref rRekognitionFirehoseStream
           BUCKET: !Ref rTweetsBucket
+          DEADLETTER_QUEUE: !Ref rDeadLetterQueue
           IMAGEKEY_PREFIX: tmp/images/
 
   rSocialMediaGlueDB:
@@ -758,6 +764,9 @@ Resources:
       Code:
         S3Bucket: !Ref pLambdaS3Bucket
         S3Key: !Ref pAddTriggerLambdaS3Key
+
+  rDeadLetterQueue:
+    Type: AWS::SQS::Queue
 
 Outputs:
   SSHCommand:
