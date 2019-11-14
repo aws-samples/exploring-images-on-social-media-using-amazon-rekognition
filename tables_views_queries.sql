@@ -529,3 +529,33 @@ FROM socialanalyticsblog.media_image_labels_face_query milfq
 WHERE top_emotion.confidence > 50
 GROUP BY top_emotion.type
 ORDER BY 2 desc;
+--
+-- Celebrity queries
+--
+
+-- 1. Count top celebrities
+SELECT name as celebrity,
+         count(*) as count
+FROM socialanalyticsblog.celeb_view
+GROUP BY  name ORDER BY  count(*) desc;
+
+-- Find the content with John Doe in either the tweet text, or the image
+SELECT cv.media_url,
+         count(*) AS count ,
+         detectedtext
+FROM socialanalyticsblog.celeb_view cv
+LEFT JOIN      -- left join to catch cases with no text
+    (SELECT tweetid,
+         mediaid,
+         textdetection.detectedtext AS detectedtext
+    FROM socialanalyticsblog.media_rekognition , UNNEST(image_labels.textdetections) >
+    WHERE (textdetection.type = 'LINE'
+            AND textdetection.id = 0) -- get the first line of text
+    ) mr
+    ON ( cv.mediaid = mr.mediaid
+        AND cv.tweetid = mr.tweetid )
+WHERE ( ( NOT position('john doe' IN lower(tweettext)) = 0 ) -- John Doe IN text
+        OR ( (NOT position('john doe' IN lower(name)) = 0) -- John Doe IN image
+        AND matchconfidence > 75) )  -- with pretty good confidence
+GROUP BY  cv.media_url, detectedtext
+ORDER BY  count(*) DESC;
