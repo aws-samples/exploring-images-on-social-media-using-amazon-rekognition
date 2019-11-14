@@ -7,7 +7,7 @@ Launch a CloudFormation Template
 ![architecture](architecture.png)
 
 ## To Deploy
-Follow the instructions in this [AWS Blog post](https: < TO DO - UPDATE >) to set up a stream from Twitter and analyze the contents.
+Follow the instructions in this [AWS Blog post](https://aws.amazon.com/blogs/machine-learning/exploring-images-on-social-media-using-amazon-rekognition-and-amazon-athena/) to set up a stream from Twitter and analyze the contents.
 
 To deploy manually (i.e., without using the blog "Launch template" bucket):
 * Clone this repo

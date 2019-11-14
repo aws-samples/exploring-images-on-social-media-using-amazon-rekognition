@@ -153,17 +153,17 @@ Parameters:
   pLambdaS3Bucket:
     Description: Please enter the name of the S3 Bucket containing the Lambda function ZIP file
     Type: String
-    Default: cg-test-us-east-1 # TODO change for BP
+    Default: aws-bigdata-blog
 
   pAnalyzeTweetsLambdaS3Key:
     Description: Please enter the S3 Key of the Analyze Tweets Lambda function ZIP file
     Type: String
-    Default: analyze_tweets_function.zip # TODO change for BP
+    Default: artifacts/exploring-images-on-social-media/analyze_tweets_function.zip
 
   pAddTriggerLambdaS3Key:
     Description: Please enter the S3 Key of the Add Trigger Lambda function ZIP file
     Type: String
-    Default: addtrigger_function.zip # TODO change for BP
+    Default: artifacts/exploring-images-on-social-media/addtrigger_function.zip
 
   pDatabaseName:
     Description: Name of the AWS Glue database containing tables for analyzing tweets

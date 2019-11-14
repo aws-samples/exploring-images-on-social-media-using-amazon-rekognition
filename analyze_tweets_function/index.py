@@ -18,7 +18,7 @@ It labels the tweets in the S3 object using Amazon Comprehend and Amazon Rekogni
 
 API Triggers: SageMaker Ground Truth
 Services: Amazon S3, Amazon Kinesis Data Firehose, Amazon Comprehend, Amazon Rekognition
-Python 3.7 - AWS Lambda - Last Modified 8/27/19
+Python 3.7 - AWS Lambda
 """
 
 import boto3
